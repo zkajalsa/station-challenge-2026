@@ -1,6 +1,6 @@
 /**
  * Station Challenge 2026
- * GitHub Pages + QUIP direct. No backend needed.
+ * GitHub Pages → Google Apps Script → QUIP
  */
 
 let state = {
@@ -30,56 +30,21 @@ async function getFingerprint() {
   }
 }
 
-// ─── QUIP API ───
-async function quipGet(path) {
-  const r = await fetch(CONFIG.QUIP_API + path, {
-    headers: { 'Authorization': 'Bearer ' + CONFIG.QUIP_TOKEN }
-  });
-  if (!r.ok) throw new Error('QUIP API error: ' + r.status);
-  return r.json();
-}
-
-async function quipPost(path, body) {
-  const r = await fetch(CONFIG.QUIP_API + path, {
-    method: 'POST',
-    headers: {
-      'Authorization': 'Bearer ' + CONFIG.QUIP_TOKEN,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(body)
-  });
-  if (!r.ok) throw new Error('QUIP API error: ' + r.status);
-  return r.json();
-}
-
-function parseSheet(html) {
-  const rows = [], rowRe = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
-  let rm, headers = [], first = true;
-  while ((rm = rowRe.exec(html)) !== null) {
-    const cellRe = /<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi;
-    let cm, cells = [];
-    while ((cm = cellRe.exec(rm[1])) !== null) {
-      cells.push(cm[1].replace(/<[^>]*>/g, '').trim());
-    }
-    if (!cells.length) continue;
-    if (first) { headers = cells; first = false; }
-    else { const o = {}; headers.forEach((h, i) => o[h] = cells[i] || ''); rows.push(o); }
+// ─── API (calls Google Apps Script) ───
+async function api(action, data = {}) {
+  if (!CONFIG.API_URL || CONFIG.API_URL.includes('YOUR_')) {
+    throw new Error('Backend not configured. Admin: deploy Google Apps Script and update config.js');
   }
-  return rows;
-}
-
-async function getSheet(threadId) {
-  const data = await quipGet('/threads/' + threadId);
-  return parseSheet(data.html || '');
-}
-
-function esc(t) { return String(t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-
-async function addRow(threadId, cells) {
-  const html = '<tr>' + cells.map(c => '<td>' + esc(c) + '</td>').join('') + '</tr>';
-  return quipPost('/threads/edit-document', {
-    thread_id: threadId, format: 'html', content: html, location: 2
+  const payload = { action, fingerprint: state.fingerprint, ...data };
+  const res = await fetch(CONFIG.API_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain' },
+    body: JSON.stringify(payload),
+    redirect: 'follow'
   });
+  const result = await res.json();
+  if (result.error) throw new Error(result.error);
+  return result;
 }
 
 // ─── Flags ───
@@ -98,7 +63,7 @@ function show(id) {
   document.getElementById(id).classList.add('active');
 }
 
-// ─── Login / Register ───
+// ─── Login ───
 async function handleLogin(e) {
   e.preventDefault();
   const login = document.getElementById('login-input').value.trim().toLowerCase();
@@ -106,53 +71,26 @@ async function handleLogin(e) {
   const shift = document.getElementById('shift-input').value;
   const err = document.getElementById('login-error');
   const btn = document.getElementById('login-btn');
-
   if (!login || !name || !shift) { err.textContent = 'All fields required.'; err.style.display = 'block'; return; }
-  err.style.display = 'none';
-  btn.disabled = true;
-  btn.querySelector('span').textContent = 'Signing in...';
+  err.style.display = 'none'; btn.disabled = true; btn.querySelector('span').textContent = 'Signing in...';
 
   try {
-    // Check if login already exists in predictions
-    const rows = await getSheet(CONFIG.PREDICTIONS_THREAD);
-    const existing = rows.find(r => r.Login && r.Login.toLowerCase() === login);
-
-    if (existing) {
-      if (existing.Fingerprint && existing.Fingerprint !== state.fingerprint) {
-        throw new Error('This login is registered on a different device. Use your original device.');
-      }
-      state.user = { login: existing.Login, fullName: existing.FullName, shift: existing.Shift };
-    } else {
-      const deviceUsed = rows.find(r => r.Fingerprint === state.fingerprint && r.Login.toLowerCase() !== login);
-      if (deviceUsed) throw new Error('This device is already registered to ' + deviceUsed.Login);
-      state.user = { login, fullName: name, shift };
-    }
-
+    const result = await api('register', { login, fullName: name, shift });
+    state.user = { login: result.login, fullName: result.fullName, shift: result.shift };
     localStorage.setItem('sc_user', JSON.stringify(state.user));
     initMain();
-  } catch (error) {
-    err.textContent = error.message;
-    err.style.display = 'block';
-  } finally {
-    btn.disabled = false;
-    btn.querySelector('span').textContent = "Let's Go";
-  }
+  } catch (error) { err.textContent = error.message; err.style.display = 'block'; }
+  finally { btn.disabled = false; btn.querySelector('span').textContent = "Let's Go"; }
 }
 
-function logout() {
-  state.user = null;
-  state.predictions = {};
-  localStorage.removeItem('sc_user');
-  show('login-screen');
-}
+function logout() { state.user = null; state.predictions = {}; localStorage.removeItem('sc_user'); show('login-screen'); }
 
 // ─── Main ───
 function initMain() {
   show('main-screen');
   document.getElementById('user-name').textContent = state.user.fullName;
   const s = document.getElementById('user-shift');
-  s.textContent = state.user.shift;
-  s.className = 'shift-badge ' + state.user.shift;
+  s.textContent = state.user.shift; s.className = 'shift-badge ' + state.user.shift;
   loadMatches();
 }
 
@@ -161,25 +99,15 @@ async function loadMatches() {
   const el = document.getElementById('matches-list');
   el.innerHTML = '<div class="empty-state">Loading matches...</div>';
   try {
-    const matchRows = await getSheet(CONFIG.MATCHES_THREAD);
-    state.matches = matchRows.map(r => ({
-      matchCode: r.MatchCode||'', teamA: r.TeamA||'', teamB: r.TeamB||'',
-      group: r.Group||'', matchDate: r.MatchDate||'', venue: r.Venue||'',
-      status: (r.Status||'open').toLowerCase(), resultA: r.ResultA||'', resultB: r.ResultB||''
-    }));
-
-    // Load my predictions
+    const data = await api('getMatches');
+    state.matches = data.matches || [];
     try {
-      const predRows = await getSheet(CONFIG.PREDICTIONS_THREAD);
+      const pd = await api('getMyPredictions', { login: state.user.login });
       state.predictions = {};
-      predRows.filter(p => p.Login && p.Login.toLowerCase() === state.user.login.toLowerCase())
-        .forEach(p => { state.predictions[p.MatchCode] = p; });
+      (pd.predictions || []).forEach(p => { state.predictions[p.matchCode] = p; });
     } catch {}
-
     renderMatches();
-  } catch (error) {
-    el.innerHTML = `<div class="empty-state">${error.message}</div>`;
-  }
+  } catch (error) { el.innerHTML = `<div class="empty-state">${error.message}</div>`; }
 }
 
 function renderMatches() {
@@ -199,8 +127,8 @@ function renderMatches() {
     const ts = d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
     let action = '';
     if (m.status === 'completed') action = `<span class="match-score">${m.resultA} - ${m.resultB}</span>`;
-    else if (m.status === 'locked') action = p ? `<span class="prediction-badge locked">Locked: ${p.ScoreA}-${p.ScoreB}</span>` : `<span class="prediction-badge locked">Closed</span>`;
-    else if (p) action = `<span class="prediction-badge submitted">✓ ${p.ScoreA}-${p.ScoreB}</span>`;
+    else if (m.status === 'locked') action = p ? `<span class="prediction-badge locked">Locked: ${p.scoreA}-${p.scoreB}</span>` : `<span class="prediction-badge locked">Closed</span>`;
+    else if (p) action = `<span class="prediction-badge submitted">✓ ${p.scoreA}-${p.scoreB}</span>`;
     else action = `<button class="btn-predict" onclick="openModal('${m.matchCode}','${m.teamA}','${m.teamB}')">Predict</button>`;
 
     return `<div class="match-card">
@@ -220,27 +148,21 @@ async function loadMyPredictions() {
   const el = document.getElementById('my-predictions-list');
   el.innerHTML = '<div class="empty-state">Loading...</div>';
   try {
-    const predRows = await getSheet(CONFIG.PREDICTIONS_THREAD);
-    const matchRows = await getSheet(CONFIG.MATCHES_THREAD);
-    const mm = {}; matchRows.forEach(m => mm[m.MatchCode] = m);
-
-    const mine = predRows.filter(p => p.Login && p.Login.toLowerCase() === state.user.login.toLowerCase());
-    if (!mine.length) { el.innerHTML = '<div class="empty-state">No predictions yet. Go to Matches!</div>'; return; }
-
-    el.innerHTML = mine.map(p => {
-      const m = mm[p.MatchCode] || {};
+    const data = await api('getMyPredictions', { login: state.user.login });
+    const preds = data.predictions || [];
+    if (!preds.length) { el.innerHTML = '<div class="empty-state">No predictions yet. Go to Matches!</div>'; return; }
+    el.innerHTML = preds.map(p => {
       let badge;
-      if (p.Points !== '' && p.Points !== undefined) {
-        const pts = parseInt(p.Points)||0;
+      if (p.points !== '' && p.points !== undefined) {
+        const pts = parseInt(p.points)||0;
         const cls = pts===5?'pts-5':pts===2?'pts-2':'pts-0';
         const lbl = pts===5?'🎯 Exact!':pts===2?'✓ Winner':'✗ Wrong';
         badge = `<span class="points-badge ${cls}">${lbl} (+${pts})</span>`;
       } else badge = `<span class="points-badge pending">⏳ Pending</span>`;
-
       return `<div class="prediction-card">
-        <div class="match-info"><span class="match-group">${m.Group||p.MatchCode}</span><span class="match-date">${new Date(m.MatchDate||'').toLocaleDateString('en-US',{month:'short',day:'numeric'})}</span></div>
-        <div class="your-pick">${flag(m.TeamA)} ${m.TeamA||''} ${p.ScoreA} - ${p.ScoreB} ${m.TeamB||''} ${flag(m.TeamB)}</div>
-        ${m.ResultA?`<div class="actual-result">Actual: ${m.ResultA} - ${m.ResultB}</div>`:''}
+        <div class="match-info"><span class="match-group">${p.group||p.matchCode}</span><span class="match-date">${new Date(p.matchDate||'').toLocaleDateString('en-US',{month:'short',day:'numeric'})}</span></div>
+        <div class="your-pick">${flag(p.teamA)} ${p.teamA} ${p.scoreA} - ${p.scoreB} ${p.teamB} ${flag(p.teamB)}</div>
+        ${p.resultA?`<div class="actual-result">Actual: ${p.resultA} - ${p.resultB}</div>`:''}
         <div style="text-align:center">${badge}</div>
       </div>`;
     }).join('');
@@ -252,21 +174,8 @@ async function loadLeaderboard() {
   const el = document.getElementById('leaderboard-table');
   el.innerHTML = '<div class="empty-state">Loading...</div>';
   try {
-    const rows = await getSheet(CONFIG.PREDICTIONS_THREAD);
-    const scores = {};
-    rows.forEach(p => {
-      if (!p.Login) return;
-      const k = p.Login.toLowerCase();
-      if (!scores[k]) scores[k] = { login:p.Login, fullName:p.FullName||p.Login, shift:(p.Shift||'').toLowerCase(), totalPoints:0, exactScores:0, correctWinners:0, total:0 };
-      scores[k].total++;
-      if (p.Points !== '' && p.Points !== undefined) {
-        const pts = parseInt(p.Points)||0;
-        scores[k].totalPoints += pts;
-        if (pts===5) scores[k].exactScores++;
-        if (pts===2) scores[k].correctWinners++;
-      }
-    });
-    state.leaderboard = Object.values(scores).sort((a,b) => b.totalPoints-a.totalPoints || b.exactScores-a.exactScores || b.correctWinners-a.correctWinners);
+    const data = await api('getLeaderboard');
+    state.leaderboard = data.leaderboard || [];
     renderLeaderboard();
   } catch (error) { el.innerHTML = `<div class="empty-state">${error.message}</div>`; }
 }
@@ -284,7 +193,7 @@ function renderLeaderboard() {
         <td class="rank-cell ${rank<=3?'rank-'+rank:''}">${rank<=3?['🥇','🥈','🥉'][rank-1]:rank}</td>
         <td class="name-cell">${r.fullName}${isMe?' (You)':''}</td>
         <td><span class="shift-badge ${r.shift}">${r.shift}</span></td>
-        <td class="points-cell">${r.totalPoints}</td><td>${r.exactScores}</td><td>${r.correctWinners}</td></tr>`;
+        <td class="points-cell">${r.totalPoints}</td><td>${r.exactScores||0}</td><td>${r.correctWinners||0}</td></tr>`;
     }).join('')}</tbody></table>`;
 }
 
@@ -293,22 +202,7 @@ async function loadWinners() {
   const el = document.getElementById('winners-display');
   el.innerHTML = '<div class="empty-state">Loading...</div>';
   try {
-    if (!state.leaderboard.length) {
-      const rows = await getSheet(CONFIG.PREDICTIONS_THREAD);
-      const scores = {};
-      rows.forEach(p => {
-        if (!p.Login) return;
-        const k = p.Login.toLowerCase();
-        if (!scores[k]) scores[k] = { login:p.Login, fullName:p.FullName||p.Login, shift:(p.Shift||'').toLowerCase(), totalPoints:0, exactScores:0, correctWinners:0 };
-        if (p.Points !== '' && p.Points !== undefined) {
-          const pts = parseInt(p.Points)||0;
-          scores[k].totalPoints += pts;
-          if (pts===5) scores[k].exactScores++;
-          if (pts===2) scores[k].correctWinners++;
-        }
-      });
-      state.leaderboard = Object.values(scores).sort((a,b) => b.totalPoints-a.totalPoints || b.exactScores-a.exactScores);
-    }
+    if (!state.leaderboard.length) await loadLeaderboard();
     const all = state.leaderboard;
     const shifts = [
       {key:'night',label:'Night Shift',icon:'🌙',count:CONFIG.WINNERS.night},
@@ -350,37 +244,13 @@ async function submitPrediction() {
   const err = document.getElementById('modal-error');
   const btn = document.getElementById('modal-submit');
   err.style.display = 'none'; btn.disabled = true; btn.textContent = 'Submitting...';
-
   try {
-    // Verify match is open
-    const matchRows = await getSheet(CONFIG.MATCHES_THREAD);
-    const match = matchRows.find(m => m.MatchCode === state.selectedMatch.code);
-    if (!match) throw new Error('Match not found.');
-    if ((match.Status||'').toLowerCase() !== 'open') throw new Error('Predictions for this match are closed.');
-
-    // Check duplicate
-    const predRows = await getSheet(CONFIG.PREDICTIONS_THREAD);
-    if (predRows.find(p => p.Login?.toLowerCase() === state.user.login.toLowerCase() && p.MatchCode === state.selectedMatch.code)) {
-      throw new Error('You already predicted this match.');
-    }
-
-    // Check device
-    const deviceUsed = predRows.find(p => p.Fingerprint === state.fingerprint && p.Login.toLowerCase() !== state.user.login.toLowerCase());
-    if (deviceUsed) throw new Error('This device belongs to ' + deviceUsed.Login);
-
-    // Winner
-    const winner = scoreA > scoreB ? match.TeamA : scoreB > scoreA ? match.TeamB : 'draw';
-
-    // Write to QUIP
-    await addRow(CONFIG.PREDICTIONS_THREAD, [
-      state.user.login, state.user.fullName, state.user.shift,
-      state.selectedMatch.code, String(scoreA), String(scoreB),
-      winner, state.fingerprint, new Date().toISOString(), ''
-    ]);
-
-    state.predictions[state.selectedMatch.code] = { MatchCode: state.selectedMatch.code, ScoreA: String(scoreA), ScoreB: String(scoreB) };
-    closeModal();
-    renderMatches();
+    await api('submitPrediction', {
+      login: state.user.login, fullName: state.user.fullName, shift: state.user.shift,
+      matchCode: state.selectedMatch.code, scoreA, scoreB
+    });
+    state.predictions[state.selectedMatch.code] = { matchCode: state.selectedMatch.code, scoreA: String(scoreA), scoreB: String(scoreB) };
+    closeModal(); renderMatches();
   } catch (error) { err.textContent = error.message; err.style.display = 'block'; }
   finally { btn.disabled = false; btn.textContent = 'Lock In Prediction'; }
 }
@@ -392,8 +262,7 @@ function initEvents() {
   document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
     document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
-    tab.classList.add('active');
-    document.getElementById('tab-'+tab.dataset.tab).classList.add('active');
+    tab.classList.add('active'); document.getElementById('tab-'+tab.dataset.tab).classList.add('active');
     if (tab.dataset.tab==='my-predictions') loadMyPredictions();
     if (tab.dataset.tab==='leaderboard') loadLeaderboard();
     if (tab.dataset.tab==='winners') loadWinners();
@@ -417,10 +286,5 @@ function initEvents() {
   document.querySelector('.modal-overlay').addEventListener('click', closeModal);
 }
 
-// ─── Boot ───
-async function boot() {
-  initEvents();
-  await getFingerprint();
-  if (state.user) initMain(); else show('login-screen');
-}
+async function boot() { initEvents(); await getFingerprint(); if (state.user) initMain(); else show('login-screen'); }
 boot();
