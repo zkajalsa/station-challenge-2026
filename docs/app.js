@@ -1,9 +1,8 @@
 /**
- * Station Challenge 2026 — Self-Registration Flow
- * Associates scan QR → enter their info → predict → data auto-populates QUIP
+ * Station Challenge 2026
+ * GitHub Pages + QUIP direct. No backend needed.
  */
 
-// ─── State ───
 let state = {
   user: JSON.parse(localStorage.getItem('sc_user') || 'null'),
   fingerprint: null,
@@ -15,52 +14,83 @@ let state = {
   selectedMatch: null
 };
 
-// ─── Device Fingerprint ───
+// ─── Fingerprint ───
 async function getFingerprint() {
   try {
     const fp = await FingerprintJS.load();
-    const result = await fp.get();
-    state.fingerprint = result.visitorId;
+    state.fingerprint = (await fp.get()).visitorId;
   } catch {
     const c = document.createElement('canvas');
-    const ctx = c.getContext('2d');
-    ctx.textBaseline = 'top';
-    ctx.font = '14px Arial';
-    ctx.fillText('fp2026', 2, 2);
-    const raw = [navigator.userAgent, navigator.language, screen.width+'x'+screen.height,
-      screen.colorDepth, new Date().getTimezoneOffset(), navigator.hardwareConcurrency,
-      c.toDataURL()].join('|');
+    c.getContext('2d').fillText('fp2026', 2, 2);
+    const raw = [navigator.userAgent, navigator.language, screen.width + 'x' + screen.height,
+      screen.colorDepth, new Date().getTimezoneOffset(), navigator.hardwareConcurrency, c.toDataURL()].join('|');
     let h = 0;
     for (let i = 0; i < raw.length; i++) { h = ((h << 5) - h) + raw.charCodeAt(i); h &= h; }
     state.fingerprint = 'fb_' + Math.abs(h).toString(36);
   }
 }
 
-// ─── API ───
-async function api(action, data = {}) {
-  if (!CONFIG.API_URL || CONFIG.API_URL.includes('YOUR_')) {
-    throw new Error('Backend not configured yet. Admin needs to set up Google Apps Script.');
-  }
-  const payload = { action, fingerprint: state.fingerprint, ...data };
-  const res = await fetch(CONFIG.API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain' },
-    body: JSON.stringify(payload)
+// ─── QUIP API ───
+async function quipGet(path) {
+  const r = await fetch(CONFIG.QUIP_API + path, {
+    headers: { 'Authorization': 'Bearer ' + CONFIG.QUIP_TOKEN }
   });
-  const result = await res.json();
-  if (result.error) throw new Error(result.error);
-  return result;
+  if (!r.ok) throw new Error('QUIP API error: ' + r.status);
+  return r.json();
+}
+
+async function quipPost(path, body) {
+  const r = await fetch(CONFIG.QUIP_API + path, {
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer ' + CONFIG.QUIP_TOKEN,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(body)
+  });
+  if (!r.ok) throw new Error('QUIP API error: ' + r.status);
+  return r.json();
+}
+
+function parseSheet(html) {
+  const rows = [], rowRe = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+  let rm, headers = [], first = true;
+  while ((rm = rowRe.exec(html)) !== null) {
+    const cellRe = /<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi;
+    let cm, cells = [];
+    while ((cm = cellRe.exec(rm[1])) !== null) {
+      cells.push(cm[1].replace(/<[^>]*>/g, '').trim());
+    }
+    if (!cells.length) continue;
+    if (first) { headers = cells; first = false; }
+    else { const o = {}; headers.forEach((h, i) => o[h] = cells[i] || ''); rows.push(o); }
+  }
+  return rows;
+}
+
+async function getSheet(threadId) {
+  const data = await quipGet('/threads/' + threadId);
+  return parseSheet(data.html || '');
+}
+
+function esc(t) { return String(t||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+async function addRow(threadId, cells) {
+  const html = '<tr>' + cells.map(c => '<td>' + esc(c) + '</td>').join('') + '</tr>';
+  return quipPost('/threads/edit-document', {
+    thread_id: threadId, format: 'html', content: html, location: 2
+  });
 }
 
 // ─── Flags ───
-const FLAGS = {
+const FL = {
   'USA':'🇺🇸','Mexico':'🇲🇽','Canada':'🇨🇦','Brazil':'🇧🇷','Argentina':'🇦🇷',
   'France':'🇫🇷','England':'🏴󠁧󠁢󠁥󠁮󠁧󠁿','Germany':'🇩🇪','Spain':'🇪🇸','Portugal':'🇵🇹',
   'Netherlands':'🇳🇱','Belgium':'🇧🇪','Italy':'🇮🇹','Japan':'🇯🇵','South Korea':'🇰🇷',
   'Australia':'🇦🇺','Morocco':'🇲🇦','Senegal':'🇸🇳','Croatia':'🇭🇷','Uruguay':'🇺🇾',
   'Colombia':'🇨🇴','Switzerland':'🇨🇭','Denmark':'🇩🇰','Poland':'🇵🇱','Serbia':'🇷🇸'
 };
-function flag(t) { return FLAGS[t] || (t && t.startsWith('TBD') ? '🏳️' : '⚽'); }
+function flag(t) { return FL[t] || (t && t.startsWith('TBD') ? '🏳️' : '⚽'); }
 
 // ─── Screens ───
 function show(id) {
@@ -68,7 +98,7 @@ function show(id) {
   document.getElementById(id).classList.add('active');
 }
 
-// ─── Registration / Login ───
+// ─── Login / Register ───
 async function handleLogin(e) {
   e.preventDefault();
   const login = document.getElementById('login-input').value.trim().toLowerCase();
@@ -77,22 +107,27 @@ async function handleLogin(e) {
   const err = document.getElementById('login-error');
   const btn = document.getElementById('login-btn');
 
-  if (!login || !name || !shift) {
-    err.textContent = 'All fields are required.';
-    err.style.display = 'block';
-    return;
-  }
-
+  if (!login || !name || !shift) { err.textContent = 'All fields required.'; err.style.display = 'block'; return; }
   err.style.display = 'none';
   btn.disabled = true;
   btn.querySelector('span').textContent = 'Signing in...';
 
   try {
-    const result = await api('register', {
-      login, fullName: name, shift, fingerprint: state.fingerprint
-    });
+    // Check if login already exists in predictions
+    const rows = await getSheet(CONFIG.PREDICTIONS_THREAD);
+    const existing = rows.find(r => r.Login && r.Login.toLowerCase() === login);
 
-    state.user = { login: result.login, fullName: result.fullName, shift: result.shift };
+    if (existing) {
+      if (existing.Fingerprint && existing.Fingerprint !== state.fingerprint) {
+        throw new Error('This login is registered on a different device. Use your original device.');
+      }
+      state.user = { login: existing.Login, fullName: existing.FullName, shift: existing.Shift };
+    } else {
+      const deviceUsed = rows.find(r => r.Fingerprint === state.fingerprint && r.Login.toLowerCase() !== login);
+      if (deviceUsed) throw new Error('This device is already registered to ' + deviceUsed.Login);
+      state.user = { login, fullName: name, shift };
+    }
+
     localStorage.setItem('sc_user', JSON.stringify(state.user));
     initMain();
   } catch (error) {
@@ -111,7 +146,7 @@ function logout() {
   show('login-screen');
 }
 
-// ─── Main App ───
+// ─── Main ───
 function initMain() {
   show('main-screen');
   document.getElementById('user-name').textContent = state.user.fullName;
@@ -126,14 +161,21 @@ async function loadMatches() {
   const el = document.getElementById('matches-list');
   el.innerHTML = '<div class="empty-state">Loading matches...</div>';
   try {
-    const data = await api('getMatches');
-    state.matches = data.matches || [];
+    const matchRows = await getSheet(CONFIG.MATCHES_THREAD);
+    state.matches = matchRows.map(r => ({
+      matchCode: r.MatchCode||'', teamA: r.TeamA||'', teamB: r.TeamB||'',
+      group: r.Group||'', matchDate: r.MatchDate||'', venue: r.Venue||'',
+      status: (r.Status||'open').toLowerCase(), resultA: r.ResultA||'', resultB: r.ResultB||''
+    }));
+
     // Load my predictions
     try {
-      const pd = await api('getMyPredictions', { login: state.user.login });
+      const predRows = await getSheet(CONFIG.PREDICTIONS_THREAD);
       state.predictions = {};
-      (pd.predictions || []).forEach(p => { state.predictions[p.matchCode] = p; });
+      predRows.filter(p => p.Login && p.Login.toLowerCase() === state.user.login.toLowerCase())
+        .forEach(p => { state.predictions[p.MatchCode] = p; });
     } catch {}
+
     renderMatches();
   } catch (error) {
     el.innerHTML = `<div class="empty-state">${error.message}</div>`;
@@ -142,14 +184,12 @@ async function loadMatches() {
 
 function renderMatches() {
   const el = document.getElementById('matches-list');
-  const f = state.matchFilter;
   const list = state.matches.filter(m => {
-    if (f === 'upcoming') return m.status === 'open';
-    if (f === 'locked') return m.status === 'locked';
-    if (f === 'completed') return m.status === 'completed';
+    if (state.matchFilter === 'upcoming') return m.status === 'open';
+    if (state.matchFilter === 'locked') return m.status === 'locked';
+    if (state.matchFilter === 'completed') return m.status === 'completed';
     return true;
   });
-
   if (!list.length) { el.innerHTML = '<div class="empty-state">No matches for this filter.</div>'; return; }
 
   el.innerHTML = list.map(m => {
@@ -157,33 +197,20 @@ function renderMatches() {
     const d = new Date(m.matchDate);
     const ds = d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
     const ts = d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
-
     let action = '';
-    if (m.status === 'completed') {
-      action = `<span class="match-score">${m.resultA} - ${m.resultB}</span>`;
-    } else if (m.status === 'locked') {
-      action = p ? `<span class="prediction-badge locked">Locked: ${p.scoreA}-${p.scoreB}</span>`
-                  : `<span class="prediction-badge locked">Closed</span>`;
-    } else if (p) {
-      action = `<span class="prediction-badge submitted">✓ ${p.scoreA}-${p.scoreB}</span>`;
-    } else {
-      action = `<button class="btn-predict" onclick="openModal('${m.matchCode}','${m.teamA}','${m.teamB}')">Predict</button>`;
-    }
+    if (m.status === 'completed') action = `<span class="match-score">${m.resultA} - ${m.resultB}</span>`;
+    else if (m.status === 'locked') action = p ? `<span class="prediction-badge locked">Locked: ${p.ScoreA}-${p.ScoreB}</span>` : `<span class="prediction-badge locked">Closed</span>`;
+    else if (p) action = `<span class="prediction-badge submitted">✓ ${p.ScoreA}-${p.ScoreB}</span>`;
+    else action = `<button class="btn-predict" onclick="openModal('${m.matchCode}','${m.teamA}','${m.teamB}')">Predict</button>`;
 
     return `<div class="match-card">
-      <div class="match-card-header">
-        <span class="match-group">${m.group || m.matchCode}</span>
-        <span class="match-date">${ds} · ${ts}</span>
-      </div>
+      <div class="match-card-header"><span class="match-group">${m.group||m.matchCode}</span><span class="match-date">${ds} · ${ts}</span></div>
       <div class="match-teams">
         <div class="match-team"><span>${flag(m.teamA)}</span><span class="match-team-name">${m.teamA}</span></div>
         <span class="match-vs">VS</span>
         <div class="match-team"><span>${flag(m.teamB)}</span><span class="match-team-name">${m.teamB}</span></div>
       </div>
-      <div class="match-card-footer">
-        <span class="match-venue">📍 ${m.venue || 'TBD'}</span>
-        ${action}
-      </div>
+      <div class="match-card-footer"><span class="match-venue">📍 ${m.venue||'TBD'}</span>${action}</div>
     </div>`;
   }).join('');
 }
@@ -193,33 +220,31 @@ async function loadMyPredictions() {
   const el = document.getElementById('my-predictions-list');
   el.innerHTML = '<div class="empty-state">Loading...</div>';
   try {
-    const data = await api('getMyPredictions', { login: state.user.login });
-    const preds = data.predictions || [];
-    if (!preds.length) { el.innerHTML = '<div class="empty-state">No predictions yet. Go to Matches!</div>'; return; }
+    const predRows = await getSheet(CONFIG.PREDICTIONS_THREAD);
+    const matchRows = await getSheet(CONFIG.MATCHES_THREAD);
+    const mm = {}; matchRows.forEach(m => mm[m.MatchCode] = m);
 
-    el.innerHTML = preds.map(p => {
+    const mine = predRows.filter(p => p.Login && p.Login.toLowerCase() === state.user.login.toLowerCase());
+    if (!mine.length) { el.innerHTML = '<div class="empty-state">No predictions yet. Go to Matches!</div>'; return; }
+
+    el.innerHTML = mine.map(p => {
+      const m = mm[p.MatchCode] || {};
       let badge;
-      if (p.points !== '' && p.points !== undefined) {
-        const pts = parseInt(p.points);
+      if (p.Points !== '' && p.Points !== undefined) {
+        const pts = parseInt(p.Points)||0;
         const cls = pts===5?'pts-5':pts===2?'pts-2':'pts-0';
         const lbl = pts===5?'🎯 Exact!':pts===2?'✓ Winner':'✗ Wrong';
         badge = `<span class="points-badge ${cls}">${lbl} (+${pts})</span>`;
-      } else {
-        badge = `<span class="points-badge pending">⏳ Pending</span>`;
-      }
+      } else badge = `<span class="points-badge pending">⏳ Pending</span>`;
+
       return `<div class="prediction-card">
-        <div class="match-info">
-          <span class="match-group">${p.group||p.matchCode}</span>
-          <span class="match-date">${new Date(p.matchDate).toLocaleDateString('en-US',{month:'short',day:'numeric'})}</span>
-        </div>
-        <div class="your-pick">${flag(p.teamA)} ${p.teamA} ${p.scoreA} - ${p.scoreB} ${p.teamB} ${flag(p.teamB)}</div>
-        ${p.resultA!==''&&p.resultA!==undefined?`<div class="actual-result">Actual: ${p.resultA} - ${p.resultB}</div>`:''}
+        <div class="match-info"><span class="match-group">${m.Group||p.MatchCode}</span><span class="match-date">${new Date(m.MatchDate||'').toLocaleDateString('en-US',{month:'short',day:'numeric'})}</span></div>
+        <div class="your-pick">${flag(m.TeamA)} ${m.TeamA||''} ${p.ScoreA} - ${p.ScoreB} ${m.TeamB||''} ${flag(m.TeamB)}</div>
+        ${m.ResultA?`<div class="actual-result">Actual: ${m.ResultA} - ${m.ResultB}</div>`:''}
         <div style="text-align:center">${badge}</div>
       </div>`;
     }).join('');
-  } catch (error) {
-    el.innerHTML = `<div class="empty-state">${error.message}</div>`;
-  }
+  } catch (error) { el.innerHTML = `<div class="empty-state">${error.message}</div>`; }
 }
 
 // ─── Leaderboard ───
@@ -227,12 +252,23 @@ async function loadLeaderboard() {
   const el = document.getElementById('leaderboard-table');
   el.innerHTML = '<div class="empty-state">Loading...</div>';
   try {
-    const data = await api('getLeaderboard');
-    state.leaderboard = data.leaderboard || [];
+    const rows = await getSheet(CONFIG.PREDICTIONS_THREAD);
+    const scores = {};
+    rows.forEach(p => {
+      if (!p.Login) return;
+      const k = p.Login.toLowerCase();
+      if (!scores[k]) scores[k] = { login:p.Login, fullName:p.FullName||p.Login, shift:(p.Shift||'').toLowerCase(), totalPoints:0, exactScores:0, correctWinners:0, total:0 };
+      scores[k].total++;
+      if (p.Points !== '' && p.Points !== undefined) {
+        const pts = parseInt(p.Points)||0;
+        scores[k].totalPoints += pts;
+        if (pts===5) scores[k].exactScores++;
+        if (pts===2) scores[k].correctWinners++;
+      }
+    });
+    state.leaderboard = Object.values(scores).sort((a,b) => b.totalPoints-a.totalPoints || b.exactScores-a.exactScores || b.correctWinners-a.correctWinners);
     renderLeaderboard();
-  } catch (error) {
-    el.innerHTML = `<div class="empty-state">${error.message}</div>`;
-  }
+  } catch (error) { el.innerHTML = `<div class="empty-state">${error.message}</div>`; }
 }
 
 function renderLeaderboard() {
@@ -240,23 +276,15 @@ function renderLeaderboard() {
   let list = state.leaderboard;
   if (state.shiftFilter !== 'all') list = list.filter(r => r.shift === state.shiftFilter);
   if (!list.length) { el.innerHTML = '<div class="empty-state">No scores yet.</div>'; return; }
-
   const me = state.user?.login?.toLowerCase();
-  el.innerHTML = `<table class="leaderboard-table">
-    <thead><tr><th>#</th><th>Associate</th><th>Shift</th><th>Pts</th><th>🎯</th><th>✓</th></tr></thead>
-    <tbody>${list.map((r,i) => {
-      const rank = i+1;
-      const isMe = r.login?.toLowerCase() === me;
-      const medal = rank<=3?['🥇','🥈','🥉'][rank-1]:rank;
-      const rc = rank<=3?`rank-${rank}`:'';
+  el.innerHTML = `<table class="leaderboard-table"><thead><tr><th>#</th><th>Associate</th><th>Shift</th><th>Pts</th><th>🎯</th><th>✓</th></tr></thead><tbody>
+    ${list.map((r,i) => {
+      const rank=i+1, isMe=r.login?.toLowerCase()===me;
       return `<tr class="${isMe?'highlight-row':''}">
-        <td class="rank-cell ${rc}">${medal}</td>
+        <td class="rank-cell ${rank<=3?'rank-'+rank:''}">${rank<=3?['🥇','🥈','🥉'][rank-1]:rank}</td>
         <td class="name-cell">${r.fullName}${isMe?' (You)':''}</td>
         <td><span class="shift-badge ${r.shift}">${r.shift}</span></td>
-        <td class="points-cell">${r.totalPoints}</td>
-        <td>${r.exactScores||0}</td>
-        <td>${r.correctWinners||0}</td>
-      </tr>`;
+        <td class="points-cell">${r.totalPoints}</td><td>${r.exactScores}</td><td>${r.correctWinners}</td></tr>`;
     }).join('')}</tbody></table>`;
 }
 
@@ -265,31 +293,34 @@ async function loadWinners() {
   const el = document.getElementById('winners-display');
   el.innerHTML = '<div class="empty-state">Loading...</div>';
   try {
-    const data = await api('getLeaderboard');
-    const all = data.leaderboard || [];
+    if (!state.leaderboard.length) {
+      const rows = await getSheet(CONFIG.PREDICTIONS_THREAD);
+      const scores = {};
+      rows.forEach(p => {
+        if (!p.Login) return;
+        const k = p.Login.toLowerCase();
+        if (!scores[k]) scores[k] = { login:p.Login, fullName:p.FullName||p.Login, shift:(p.Shift||'').toLowerCase(), totalPoints:0, exactScores:0, correctWinners:0 };
+        if (p.Points !== '' && p.Points !== undefined) {
+          const pts = parseInt(p.Points)||0;
+          scores[k].totalPoints += pts;
+          if (pts===5) scores[k].exactScores++;
+          if (pts===2) scores[k].correctWinners++;
+        }
+      });
+      state.leaderboard = Object.values(scores).sort((a,b) => b.totalPoints-a.totalPoints || b.exactScores-a.exactScores);
+    }
+    const all = state.leaderboard;
     const shifts = [
       {key:'night',label:'Night Shift',icon:'🌙',count:CONFIG.WINNERS.night},
       {key:'early',label:'Early Shift',icon:'🌅',count:CONFIG.WINNERS.early},
       {key:'late',label:'Late Shift',icon:'🌇',count:CONFIG.WINNERS.late}
     ];
     el.innerHTML = shifts.map(s => {
-      const winners = all.filter(r=>r.shift===s.key).slice(0,s.count);
-      const rows = winners.length
-        ? winners.map((w,i)=>`<div class="winner-row">
-            <span class="winner-rank">${i+1}</span>
-            <div class="winner-info"><div class="winner-name">${w.fullName}</div><div class="winner-login">${w.login}</div></div>
-            <span class="winner-points">${w.totalPoints} pts</span>
-          </div>`).join('')
-        : '<div class="empty-state" style="padding:16px">No scores yet</div>';
-      return `<div class="winners-section">
-        <h3>${s.icon} ${s.label}</h3>
-        <div class="winner-count">Top ${s.count} winners</div>
-        ${rows}
-      </div>`;
+      const w = all.filter(r=>r.shift===s.key).slice(0,s.count);
+      const rows = w.length ? w.map((r,i)=>`<div class="winner-row"><span class="winner-rank">${i+1}</span><div class="winner-info"><div class="winner-name">${r.fullName}</div><div class="winner-login">${r.login}</div></div><span class="winner-points">${r.totalPoints} pts</span></div>`).join('') : '<div class="empty-state" style="padding:16px">No scores yet</div>';
+      return `<div class="winners-section"><h3>${s.icon} ${s.label}</h3><div class="winner-count">Top ${s.count} winners</div>${rows}</div>`;
     }).join('');
-  } catch (error) {
-    el.innerHTML = `<div class="empty-state">${error.message}</div>`;
-  }
+  } catch (error) { el.innerHTML = `<div class="empty-state">${error.message}</div>`; }
 }
 
 // ─── Modal ───
@@ -305,17 +336,11 @@ function openModal(code, teamA, teamB) {
   updateSummary();
   document.getElementById('prediction-modal').style.display = 'flex';
 }
-function closeModal() {
-  document.getElementById('prediction-modal').style.display = 'none';
-  state.selectedMatch = null;
-}
+function closeModal() { document.getElementById('prediction-modal').style.display = 'none'; state.selectedMatch = null; }
 function updateSummary() {
   if (!state.selectedMatch) return;
-  const a = +document.getElementById('modal-score-a').value;
-  const b = +document.getElementById('modal-score-b').value;
-  const m = state.selectedMatch;
-  const el = document.getElementById('prediction-summary');
-  el.textContent = a>b ? `${m.teamA} wins ${a}-${b}` : b>a ? `${m.teamB} wins ${b}-${a}` : `Draw ${a}-${b}`;
+  const a = +document.getElementById('modal-score-a').value, b = +document.getElementById('modal-score-b').value, m = state.selectedMatch;
+  document.getElementById('prediction-summary').textContent = a>b?`${m.teamA} wins ${a}-${b}`:b>a?`${m.teamB} wins ${b}-${a}`:`Draw ${a}-${b}`;
 }
 
 async function submitPrediction() {
@@ -324,81 +349,68 @@ async function submitPrediction() {
   const scoreB = +document.getElementById('modal-score-b').value;
   const err = document.getElementById('modal-error');
   const btn = document.getElementById('modal-submit');
-  err.style.display = 'none';
-  btn.disabled = true;
-  btn.textContent = 'Submitting...';
+  err.style.display = 'none'; btn.disabled = true; btn.textContent = 'Submitting...';
 
   try {
-    await api('submitPrediction', {
-      login: state.user.login,
-      fullName: state.user.fullName,
-      shift: state.user.shift,
-      matchCode: state.selectedMatch.code,
-      scoreA, scoreB
-    });
-    state.predictions[state.selectedMatch.code] = {
-      matchCode: state.selectedMatch.code,
-      teamA: state.selectedMatch.teamA,
-      teamB: state.selectedMatch.teamB,
-      scoreA, scoreB
-    };
+    // Verify match is open
+    const matchRows = await getSheet(CONFIG.MATCHES_THREAD);
+    const match = matchRows.find(m => m.MatchCode === state.selectedMatch.code);
+    if (!match) throw new Error('Match not found.');
+    if ((match.Status||'').toLowerCase() !== 'open') throw new Error('Predictions for this match are closed.');
+
+    // Check duplicate
+    const predRows = await getSheet(CONFIG.PREDICTIONS_THREAD);
+    if (predRows.find(p => p.Login?.toLowerCase() === state.user.login.toLowerCase() && p.MatchCode === state.selectedMatch.code)) {
+      throw new Error('You already predicted this match.');
+    }
+
+    // Check device
+    const deviceUsed = predRows.find(p => p.Fingerprint === state.fingerprint && p.Login.toLowerCase() !== state.user.login.toLowerCase());
+    if (deviceUsed) throw new Error('This device belongs to ' + deviceUsed.Login);
+
+    // Winner
+    const winner = scoreA > scoreB ? match.TeamA : scoreB > scoreA ? match.TeamB : 'draw';
+
+    // Write to QUIP
+    await addRow(CONFIG.PREDICTIONS_THREAD, [
+      state.user.login, state.user.fullName, state.user.shift,
+      state.selectedMatch.code, String(scoreA), String(scoreB),
+      winner, state.fingerprint, new Date().toISOString(), ''
+    ]);
+
+    state.predictions[state.selectedMatch.code] = { MatchCode: state.selectedMatch.code, ScoreA: String(scoreA), ScoreB: String(scoreB) };
     closeModal();
     renderMatches();
-  } catch (error) {
-    err.textContent = error.message;
-    err.style.display = 'block';
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Lock In Prediction';
-  }
+  } catch (error) { err.textContent = error.message; err.style.display = 'block'; }
+  finally { btn.disabled = false; btn.textContent = 'Lock In Prediction'; }
 }
 
 // ─── Events ───
 function initEvents() {
   document.getElementById('login-form').addEventListener('submit', handleLogin);
   document.getElementById('logout-btn').addEventListener('click', logout);
-
-  document.querySelectorAll('.tab').forEach(tab => {
-    tab.addEventListener('click', () => {
-      document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
-      document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
-      tab.classList.add('active');
-      document.getElementById('tab-'+tab.dataset.tab).classList.add('active');
-      if (tab.dataset.tab==='my-predictions') loadMyPredictions();
-      if (tab.dataset.tab==='leaderboard') loadLeaderboard();
-      if (tab.dataset.tab==='winners') loadWinners();
-    });
-  });
-
-  document.querySelectorAll('#tab-matches .filter-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('#tab-matches .filter-btn').forEach(b=>b.classList.remove('active'));
-      btn.classList.add('active');
-      state.matchFilter = btn.dataset.filter;
-      renderMatches();
-    });
-  });
-
-  document.querySelectorAll('#tab-leaderboard .filter-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('#tab-leaderboard .filter-btn').forEach(b=>b.classList.remove('active'));
-      btn.classList.add('active');
-      state.shiftFilter = btn.dataset.shift;
-      renderLeaderboard();
-    });
-  });
-
-  document.querySelectorAll('.score-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const t = document.getElementById(btn.dataset.target);
-      let v = +t.value;
-      if (btn.classList.contains('plus') && v<20) v++;
-      if (btn.classList.contains('minus') && v>0) v--;
-      t.value = v;
-      updateSummary();
-    });
-  });
-
+  document.querySelectorAll('.tab').forEach(tab => tab.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('tab-'+tab.dataset.tab).classList.add('active');
+    if (tab.dataset.tab==='my-predictions') loadMyPredictions();
+    if (tab.dataset.tab==='leaderboard') loadLeaderboard();
+    if (tab.dataset.tab==='winners') loadWinners();
+  }));
+  document.querySelectorAll('#tab-matches .filter-btn').forEach(btn => btn.addEventListener('click', () => {
+    document.querySelectorAll('#tab-matches .filter-btn').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active'); state.matchFilter = btn.dataset.filter; renderMatches();
+  }));
+  document.querySelectorAll('#tab-leaderboard .filter-btn').forEach(btn => btn.addEventListener('click', () => {
+    document.querySelectorAll('#tab-leaderboard .filter-btn').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active'); state.shiftFilter = btn.dataset.shift; renderLeaderboard();
+  }));
+  document.querySelectorAll('.score-btn').forEach(btn => btn.addEventListener('click', () => {
+    const t = document.getElementById(btn.dataset.target); let v = +t.value;
+    if (btn.classList.contains('plus')&&v<20) v++; if (btn.classList.contains('minus')&&v>0) v--;
+    t.value = v; updateSummary();
+  }));
   document.getElementById('modal-close').addEventListener('click', closeModal);
   document.getElementById('modal-cancel').addEventListener('click', closeModal);
   document.getElementById('modal-submit').addEventListener('click', submitPrediction);
@@ -409,6 +421,6 @@ function initEvents() {
 async function boot() {
   initEvents();
   await getFingerprint();
-  if (state.user) { initMain(); } else { show('login-screen'); }
+  if (state.user) initMain(); else show('login-screen');
 }
 boot();
