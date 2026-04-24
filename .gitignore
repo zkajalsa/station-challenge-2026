@@ -2,6 +2,7 @@ node_modules/
 server/station_challenge.db
 server/station_challenge.db-wal
 server/station_challenge.db-shm
+server/package-lock.json
 *.log
 .env
 .DS_Store
