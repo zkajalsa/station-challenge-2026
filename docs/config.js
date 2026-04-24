@@ -4,14 +4,14 @@
  */
 const CONFIG = {
   // QUIP API token — get from https://quip-amazon.com/dev/token
-  QUIP_TOKEN: 'YOUR_QUIP_TOKEN_HERE',
+  QUIP_TOKEN: 'VEtQOU1BdEszcXY=|1808578678|Ognriu/R2BXbEUk+fFcmmSqop9tKTiON66PmEduPQsg=',
 
   // QUIP base URL — use your Amazon QUIP domain
   QUIP_API: 'https://platform.quip-amazon.com/1',
 
   // Thread IDs of your 2 spreadsheets
-  MATCHES_THREAD: 'YOUR_MATCHES_THREAD_ID',
-  PREDICTIONS_THREAD: 'YOUR_PREDICTIONS_THREAD_ID',
+  MATCHES_THREAD: 'oPOBAONaazXq',
+  PREDICTIONS_THREAD: 'oPOBAONaazXq',
 
   // Scoring
   POINTS_EXACT: 5,
