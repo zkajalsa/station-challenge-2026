@@ -4,7 +4,7 @@
  */
 const CONFIG = {
   // Google Apps Script URL — paste after deploying
-  API_URL: 'YOUR_GOOGLE_APPS_SCRIPT_URL_HERE',
+  API_URL: 'https://script.google.com/macros/s/AKfycbzgV9tFm2p3BdRW4ETDT5PmIG8aRXPH_jxKcwVHAdA8jZzFfE1wDJd2wLWz2aEswOaEcg/exec',
 
   // Scoring
   POINTS_EXACT: 5,
