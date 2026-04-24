@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Station Challenge 2026 ⚽</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/@fingerprintjs/fingerprintjs@4/dist/fp.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <!-- Loading -->
+    <div id="loading-screen" class="screen active">
+      <div class="loader-container">
+        <div class="loader"></div>
+        <p>Loading Station Challenge...</p>
+      </div>
+    </div>
+
+    <!-- Login Screen -->
+    <div id="login-screen" class="screen">
+      <div class="login-card">
+        <div class="logo-section">
+          <div class="logo-icon">⚽</div>
+          <h1>Station Challenge</h1>
+          <p class="subtitle">FIFA World Cup 2026</p>
+          <p class="tagline">Predict. Compete. Win.</p>
+        </div>
+        <form id="login-form">
+          <div class="input-group">
+            <label for="login-input">Amazon Login</label>
+            <input type="text" id="login-input" placeholder="e.g. jsmith" autocomplete="username" required>
+          </div>
+          <div class="input-group">
+            <label for="badge-input">Badge ID <span class="optional">(optional)</span></label>
+            <input type="text" id="badge-input" placeholder="e.g. BADGE001" autocomplete="off">
+          </div>
+          <button type="submit" class="btn btn-primary" id="login-btn">
+            <span>Sign In</span>
+          </button>
+          <p id="login-error" class="error-text" style="display:none;"></p>
+        </form>
+        <p class="footer-note">One device per associate. Your predictions are private.</p>
+      </div>
+    </div>
+
+    <!-- Main App -->
+    <div id="main-screen" class="screen">
+      <!-- Header -->
+      <header class="app-header">
+        <div class="header-left">
+          <span class="header-icon">⚽</span>
+          <span class="header-title">Station Challenge</span>
+        </div>
+        <div class="header-right">
+          <span id="user-name" class="user-badge"></span>
+          <span id="user-shift" class="shift-badge"></span>
+          <button id="logout-btn" class="btn-icon" title="Sign Out">✕</button>
+        </div>
+      </header>
+
+      <!-- Navigation Tabs -->
+      <nav class="tab-nav">
+        <button class="tab active" data-tab="matches">Matches</button>
+        <button class="tab" data-tab="my-predictions">My Picks</button>
+        <button class="tab" data-tab="leaderboard">Leaderboard</button>
+        <button class="tab" data-tab="winners">Winners</button>
+      </nav>
+
+      <!-- Tab Content -->
+      <main class="tab-content">
+        <!-- Matches Tab -->
+        <section id="tab-matches" class="tab-panel active">
+          <div class="filter-bar">
+            <button class="filter-btn active" data-filter="upcoming">Open</button>
+            <button class="filter-btn" data-filter="locked">In Progress</button>
+            <button class="filter-btn" data-filter="completed">Completed</button>
+          </div>
+          <div id="matches-list" class="card-list">
+            <div class="empty-state">Loading matches...</div>
+          </div>
+        </section>
+
+        <!-- My Predictions Tab -->
+        <section id="tab-my-predictions" class="tab-panel">
+          <div id="my-predictions-list" class="card-list">
+            <div class="empty-state">Loading your predictions...</div>
+          </div>
+        </section>
+
+        <!-- Leaderboard Tab -->
+        <section id="tab-leaderboard" class="tab-panel">
+          <div class="filter-bar">
+            <button class="filter-btn active" data-shift="all">All Shifts</button>
+            <button class="filter-btn" data-shift="night">Night</button>
+            <button class="filter-btn" data-shift="early">Early</button>
+            <button class="filter-btn" data-shift="late">Late</button>
+          </div>
+          <div id="leaderboard-table" class="leaderboard-container">
+            <div class="empty-state">Loading leaderboard...</div>
+          </div>
+        </section>
+
+        <!-- Winners Tab -->
+        <section id="tab-winners" class="tab-panel">
+          <div id="winners-display" class="winners-container">
+            <div class="empty-state">Loading winners...</div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <!-- Prediction Modal -->
+    <div id="prediction-modal" class="modal" style="display:none;">
+      <div class="modal-overlay"></div>
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Submit Your Prediction</h2>
+          <button class="modal-close" id="modal-close">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="match-preview">
+            <div class="team team-a">
+              <span class="team-flag" id="modal-flag-a"></span>
+              <span class="team-name" id="modal-team-a"></span>
+            </div>
+            <span class="vs-text">VS</span>
+            <div class="team team-b">
+              <span class="team-flag" id="modal-flag-b"></span>
+              <span class="team-name" id="modal-team-b"></span>
+            </div>
+          </div>
+          <div class="score-input-row">
+            <div class="score-input-group">
+              <button class="score-btn minus" data-target="score-a">−</button>
+              <input type="number" id="modal-score-a" class="score-input" value="0" min="0" max="20" readonly>
+              <button class="score-btn plus" data-target="score-a">+</button>
+            </div>
+            <span class="score-separator">:</span>
+            <div class="score-input-group">
+              <button class="score-btn minus" data-target="score-b">−</button>
+              <input type="number" id="modal-score-b" class="score-input" value="0" min="0" max="20" readonly>
+              <button class="score-btn plus" data-target="score-b">+</button>
+            </div>
+          </div>
+          <div class="prediction-summary" id="prediction-summary"></div>
+          <p id="modal-error" class="error-text" style="display:none;"></p>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="modal-cancel">Cancel</button>
+          <button class="btn btn-primary" id="modal-submit">Lock In Prediction</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

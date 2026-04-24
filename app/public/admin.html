@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Station Challenge 2026 — Admin</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    body { background: var(--bg); color: var(--text); font-family: var(--font); }
+    .admin-container { max-width: 900px; margin: 0 auto; padding: 20px; }
+    .admin-header { text-align: center; padding: 30px 0; }
+    .admin-header h1 { font-size: 24px; margin-bottom: 4px; }
+    .admin-header p { color: var(--text-muted); font-size: 14px; }
+
+    .admin-login { max-width: 400px; margin: 40px auto; }
+    .admin-section { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; margin-bottom: 20px; }
+    .admin-section h2 { font-size: 18px; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+
+    .form-row { display: flex; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+    .form-row .input-group { flex: 1; min-width: 150px; }
+
+    textarea {
+      width: 100%; padding: 12px; background: var(--bg); border: 1px solid var(--border);
+      border-radius: var(--radius-sm); color: var(--text); font-family: monospace; font-size: 13px;
+      min-height: 120px; resize: vertical;
+    }
+    textarea:focus { outline: none; border-color: var(--accent); }
+
+    .match-result-card {
+      display: flex; align-items: center; gap: 12px; padding: 12px;
+      background: var(--bg); border-radius: var(--radius-sm); margin-bottom: 8px;
+    }
+    .match-result-card .teams { flex: 1; font-weight: 600; }
+    .match-result-card input[type="number"] {
+      width: 60px; padding: 8px; text-align: center; background: var(--bg-card);
+      border: 1px solid var(--border); border-radius: 6px; color: var(--text);
+      font-size: 16px; font-weight: 700;
+    }
+    .match-result-card .result-dash { font-weight: 700; color: var(--text-muted); }
+
+    .status-msg { padding: 12px; border-radius: var(--radius-sm); margin-top: 12px; font-size: 13px; }
+    .status-msg.success { background: rgba(39,174,96,0.15); color: var(--success); }
+    .status-msg.error { background: rgba(231,76,60,0.15); color: var(--danger); }
+
+    .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+    .stat-card { background: var(--bg); border-radius: var(--radius-sm); padding: 16px; text-align: center; }
+    .stat-card .stat-value { font-size: 28px; font-weight: 800; color: var(--accent); }
+    .stat-card .stat-label { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+
+    .qr-section { text-align: center; }
+    .qr-section img { max-width: 300px; margin: 16px auto; border-radius: var(--radius); }
+
+    #admin-app { display: none; }
+  </style>
+</head>
+<body>
+  <div class="admin-container">
+    <div class="admin-header">
+      <h1>⚽ Station Challenge 2026</h1>
+      <p>Admin Dashboard</p>
+    </div>
+
+    <!-- Admin Login -->
+    <div id="admin-login" class="admin-login">
+      <div class="admin-section">
+        <h2>🔐 Admin Access</h2>
+        <div class="input-group">
+          <label>Login</label>
+          <input type="text" id="admin-user" placeholder="admin">
+        </div>
+        <div class="input-group">
+          <label>PIN</label>
+          <input type="password" id="admin-pin" placeholder="Enter admin PIN">
+        </div>
+        <button class="btn btn-primary" onclick="adminLogin()" style="margin-top:12px;">Sign In</button>
+        <div id="admin-login-error" class="status-msg error" style="display:none;"></div>
+      </div>
+    </div>
+
+    <!-- Admin Dashboard -->
+    <div id="admin-app">
+      <!-- Stats -->
+      <div class="admin-section">
+        <h2>📊 Dashboard</h2>
+        <div id="stats-grid" class="stats-grid"></div>
+      </div>
+
+      <!-- QR Code -->
+      <div class="admin-section qr-section">
+        <h2>📱 QR Code</h2>
+        <p>Print this and post it in the station for associates to scan.</p>
+        <div id="qr-display"></div>
+        <div class="input-group" style="max-width:400px;margin:12px auto;">
+          <label>App URL (change if not localhost)</label>
+          <input type="text" id="qr-url" value="" placeholder="http://your-server:3000">
+        </div>
+        <button class="btn btn-secondary" onclick="generateQR()">Regenerate QR</button>
+      </div>
+
+      <!-- Add Associates -->
+      <div class="admin-section">
+        <h2>👥 Import Associates</h2>
+        <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px;">
+          Paste JSON array or use the Tampermonkey script to scrape from roster tools.
+        </p>
+        <textarea id="associates-json" placeholder='[
+  {"login": "jsmith", "fullName": "John Smith", "shift": "night", "badgeId": "BADGE001"},
+  {"login": "jdoe", "fullName": "Jane Doe", "shift": "early", "badgeId": "BADGE002"}
+]'></textarea>
+        <button class="btn btn-primary" onclick="importAssociates()" style="margin-top:12px;">Import Associates</button>
+        <div id="import-status" class="status-msg" style="display:none;"></div>
+      </div>
+
+      <!-- Record Results -->
+      <div class="admin-section">
+        <h2>🏟️ Record Match Results</h2>
+        <p style="color:var(--text-muted);font-size:13px;margin-bottom:12px;">
+          Enter final scores. Points will be calculated automatically.
+        </p>
+        <div id="pending-matches"></div>
+      </div>
+
+      <!-- Fraud Report -->
+      <div class="admin-section">
+        <h2>🛡️ Fraud Detection</h2>
+        <button class="btn btn-secondary" onclick="loadFraudReport()">Run Fraud Report</button>
+        <div id="fraud-report" style="margin-top:12px;"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API = window.location.origin + '/api';
+    let adminToken = '';
+
+    async function adminApiCall(endpoint, options = {}) {
+      const headers = { 'Content-Type': 'application/json', 'X-Admin-Token': adminToken, ...options.headers };
+      const res = await fetch(API + endpoint, { ...options, headers });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Request failed');
+      return data;
+    }
+
+    async function adminLogin() {
+      const user = document.getElementById('admin-user').value;
+      const pin = document.getElementById('admin-pin').value;
+      const errorEl = document.getElementById('admin-login-error');
+      errorEl.style.display = 'none';
+
+      try {
+        const data = await fetch(API + '/admin/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ login: user, pin })
+        }).then(r => r.json());
+
+        if (data.success) {
+          adminToken = data.token;
+          document.getElementById('admin-login').style.display = 'none';
+          document.getElementById('admin-app').style.display = 'block';
+          loadDashboard();
+        } else {
+          throw new Error(data.error);
+        }
+      } catch (err) {
+        errorEl.textContent = err.message;
+        errorEl.style.display = 'block';
+      }
+    }
+
+    async function loadDashboard() {
+      // Stats
+      try {
+        const { stats } = await adminApiCall('/leaderboard/stats');
+        document.getElementById('stats-grid').innerHTML = `
+          <div class="stat-card"><div class="stat-value">${stats.totalAssociates}</div><div class="stat-label">Associates</div></div>
+          <div class="stat-card"><div class="stat-value">${stats.totalPredictions}</div><div class="stat-label">Predictions</div></div>
+          <div class="stat-card"><div class="stat-value">${stats.totalMatches}</div><div class="stat-label">Matches</div></div>
+          <div class="stat-card"><div class="stat-value">${stats.completedMatches}</div><div class="stat-label">Completed</div></div>
+        `;
+      } catch {}
+
+      // QR
+      generateQR();
+
+      // Pending matches
+      loadPendingMatches();
+    }
+
+    async function generateQR() {
+      const url = document.getElementById('qr-url').value || window.location.origin;
+      try {
+        const data = await fetch(API + '/qr/generate?url=' + encodeURIComponent(url)).then(r => r.json());
+        document.getElementById('qr-display').innerHTML = `<img src="${data.qrCode}" alt="QR Code"><p style="color:var(--text-muted);font-size:12px;">${data.url}</p>`;
+      } catch {}
+    }
+
+    async function importAssociates() {
+      const textarea = document.getElementById('associates-json');
+      const statusEl = document.getElementById('import-status');
+      try {
+        const associates = JSON.parse(textarea.value);
+        const data = await adminApiCall('/admin/associates', {
+          method: 'POST',
+          body: JSON.stringify({ associates })
+        });
+        statusEl.className = 'status-msg success';
+        statusEl.textContent = `✅ Imported ${data.added} of ${data.total} associates.`;
+        statusEl.style.display = 'block';
+      } catch (err) {
+        statusEl.className = 'status-msg error';
+        statusEl.textContent = '❌ ' + err.message;
+        statusEl.style.display = 'block';
+      }
+    }
+
+    async function loadPendingMatches() {
+      try {
+        const { matches } = await fetch(API + '/matches?status=locked').then(r => r.json());
+        const container = document.getElementById('pending-matches');
+
+        if (matches.length === 0) {
+          container.innerHTML = '<p style="color:var(--text-muted);">No locked matches awaiting results.</p>';
+          return;
+        }
+
+        container.innerHTML = matches.map(m => `
+          <div class="match-result-card" data-match-id="${m.id}">
+            <span class="teams">${m.team_a} vs ${m.team_b}</span>
+            <input type="number" class="result-a" min="0" max="20" value="0">
+            <span class="result-dash">-</span>
+            <input type="number" class="result-b" min="0" max="20" value="0">
+            <button class="btn-predict" onclick="recordResult(${m.id}, this)">Save</button>
+          </div>
+        `).join('');
+      } catch {}
+    }
+
+    async function recordResult(matchId, btn) {
+      const card = btn.closest('.match-result-card');
+      const scoreA = card.querySelector('.result-a').value;
+      const scoreB = card.querySelector('.result-b').value;
+
+      try {
+        btn.disabled = true;
+        btn.textContent = '...';
+        await adminApiCall(`/admin/matches/${matchId}/result`, {
+          method: 'PUT',
+          body: JSON.stringify({ scoreA: parseInt(scoreA), scoreB: parseInt(scoreB) })
+        });
+        card.style.opacity = '0.5';
+        btn.textContent = '✓ Done';
+        loadDashboard();
+      } catch (err) {
+        btn.textContent = 'Error';
+        btn.disabled = false;
+        alert(err.message);
+      }
+    }
+
+    async function loadFraudReport() {
+      try {
+        const data = await adminApiCall('/admin/fraud-report');
+        const container = document.getElementById('fraud-report');
+
+        let html = '';
+        if (data.sharedDevices.length > 0) {
+          html += '<h3 style="color:var(--warning);margin:12px 0 8px;">⚠️ Shared Devices</h3>';
+          data.sharedDevices.forEach(d => {
+            html += `<p style="font-size:13px;">Device used by associates: ${d.associate_ids} (${d.count} users)</p>`;
+          });
+        }
+        if (data.suspiciousEvents.length > 0) {
+          html += '<h3 style="color:var(--danger);margin:12px 0 8px;">🚨 Suspicious Events</h3>';
+          data.suspiciousEvents.forEach(e => {
+            html += `<p style="font-size:12px;color:var(--text-muted);">[${e.created_at}] ${e.event_type}: ${e.details}</p>`;
+          });
+        }
+        if (!html) html = '<p style="color:var(--success);">✅ No suspicious activity detected.</p>';
+
+        container.innerHTML = html;
+      } catch (err) {
+        document.getElementById('fraud-report').innerHTML = `<p style="color:var(--danger);">Error: ${err.message}</p>`;
+      }
+    }
+  </script>
+</body>
+</html>
