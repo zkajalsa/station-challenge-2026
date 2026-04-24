@@ -2,67 +2,49 @@
  * ═══════════════════════════════════════════════════════════════
  * STATION CHALLENGE 2026 — Google Apps Script Backend
  * ═══════════════════════════════════════════════════════════════
- * 
- * This script acts as a free serverless backend that connects
- * your GitHub Pages frontend to QUIP spreadsheets.
- * 
- * QUIP Spreadsheets needed (create 4 spreadsheets in QUIP):
- * 1. Associates  — columns: Login | FullName | Shift | BadgeID | Fingerprint
- * 2. Matches     — columns: MatchCode | TeamA | TeamB | Group | MatchDate | Venue | Status | ResultA | ResultB
- * 3. Predictions — columns: Login | MatchCode | ScoreA | ScoreB | PredictedWinner | Fingerprint | Timestamp | Points
- * 4. Leaderboard — columns: Login | FullName | Shift | TotalPoints | ExactScores | CorrectWinners | TotalPredictions
- * 
+ *
+ * Self-registration flow. Only 2 QUIP spreadsheets needed:
+ *
+ * 1. MATCHES — You pre-fill this with World Cup fixtures
+ *    Columns: MatchCode | TeamA | TeamB | Group | MatchDate | Venue | Status | ResultA | ResultB
+ *
+ * 2. PREDICTIONS — Starts empty, auto-fills as associates vote
+ *    Columns: Login | FullName | Shift | MatchCode | ScoreA | ScoreB | PredictedWinner | Fingerprint | Timestamp | Points
+ *
+ * The Predictions sheet IS the database. Associates + their votes
+ * all live in one place. Leaderboard is calculated on the fly.
+ *
  * SETUP:
- * 1. Get your QUIP API token at https://quip.com/dev/token
- * 2. Create the 4 spreadsheets in QUIP
- * 3. Fill in the QUIP_CONFIG below with your token and thread IDs
- * 4. Deploy this as a Web App (Execute as: Me, Access: Anyone)
+ * 1. Get QUIP token: https://quip.com/dev/token
+ * 2. Create 2 spreadsheets, note their Thread IDs
+ * 3. Fill in QUIP_CONFIG below
+ * 4. Deploy as Web App → Anyone can access
  */
 
-// ─── CONFIGURATION — FILL THESE IN ───
+// ═══ FILL THESE IN ═══
 const QUIP_CONFIG = {
-  TOKEN: 'YOUR_QUIP_API_TOKEN',           // Get from https://quip.com/dev/token
-  ASSOCIATES_THREAD: 'YOUR_THREAD_ID',     // Thread ID of Associates spreadsheet
-  MATCHES_THREAD: 'YOUR_THREAD_ID',        // Thread ID of Matches spreadsheet
-  PREDICTIONS_THREAD: 'YOUR_THREAD_ID',    // Thread ID of Predictions spreadsheet
-  LEADERBOARD_THREAD: 'YOUR_THREAD_ID'     // Thread ID of Leaderboard spreadsheet
+  TOKEN: 'YOUR_QUIP_API_TOKEN',
+  MATCHES_THREAD: 'YOUR_MATCHES_THREAD_ID',
+  PREDICTIONS_THREAD: 'YOUR_PREDICTIONS_THREAD_ID'
 };
 
 const QUIP_API = 'https://platform.quip.com/1';
 
-// ─── Web App Entry Points ───
+// ─── Entry Points ───
 
 function doPost(e) {
   try {
     const data = JSON.parse(e.postData.contents);
-    const action = data.action;
-
     let result;
-    switch (action) {
-      case 'login':
-        result = handleLogin(data);
-        break;
-      case 'getMatches':
-        result = handleGetMatches();
-        break;
-      case 'getMyPredictions':
-        result = handleGetMyPredictions(data.login);
-        break;
-      case 'submitPrediction':
-        result = handleSubmitPrediction(data);
-        break;
-      case 'getLeaderboard':
-        result = handleGetLeaderboard();
-        break;
-      // Admin actions
-      case 'addAssociates':
-        result = handleAddAssociates(data.associates);
-        break;
-      case 'recordResult':
-        result = handleRecordResult(data);
-        break;
-      default:
-        result = { error: 'Unknown action: ' + action };
+
+    switch (data.action) {
+      case 'register':     result = handleRegister(data); break;
+      case 'getMatches':   result = handleGetMatches(); break;
+      case 'getMyPredictions': result = handleGetMyPredictions(data.login); break;
+      case 'submitPrediction': result = handleSubmitPrediction(data); break;
+      case 'getLeaderboard':   result = handleGetLeaderboard(); break;
+      case 'recordResult':     result = handleRecordResult(data); break;
+      default: result = { error: 'Unknown action' };
     }
 
     return ContentService.createTextOutput(JSON.stringify(result))
@@ -73,302 +55,214 @@ function doPost(e) {
   }
 }
 
-function doGet(e) {
-  return ContentService.createTextOutput(JSON.stringify({ status: 'Station Challenge 2026 API is running' }))
-    .setMimeType(ContentService.MimeType.JSON);
+function doGet() {
+  return ContentService.createTextOutput(
+    JSON.stringify({ status: 'ok', app: 'Station Challenge 2026' })
+  ).setMimeType(ContentService.MimeType.JSON);
 }
 
-// ─── QUIP API Helpers ───
+// ─── QUIP Helpers ───
 
-function quipGet(endpoint) {
-  const response = UrlFetchApp.fetch(QUIP_API + endpoint, {
-    method: 'GET',
+function quipGet(path) {
+  const r = UrlFetchApp.fetch(QUIP_API + path, {
     headers: { 'Authorization': 'Bearer ' + QUIP_CONFIG.TOKEN },
     muteHttpExceptions: true
   });
-  return JSON.parse(response.getContentText());
+  return JSON.parse(r.getContentText());
 }
 
-function quipPost(endpoint, payload) {
-  const response = UrlFetchApp.fetch(QUIP_API + endpoint, {
+function quipPost(path, payload) {
+  const r = UrlFetchApp.fetch(QUIP_API + path, {
     method: 'POST',
-    headers: {
-      'Authorization': 'Bearer ' + QUIP_CONFIG.TOKEN,
-      'Content-Type': 'application/json'
-    },
+    headers: { 'Authorization': 'Bearer ' + QUIP_CONFIG.TOKEN, 'Content-Type': 'application/json' },
     payload: JSON.stringify(payload),
     muteHttpExceptions: true
   });
-  return JSON.parse(response.getContentText());
+  return JSON.parse(r.getContentText());
 }
 
-/**
- * Parse a QUIP spreadsheet thread into rows of data.
- * Returns array of objects with column headers as keys.
- */
-function parseQuipSpreadsheet(threadId) {
+function parseSheet(threadId) {
   const thread = quipGet('/threads/' + threadId);
-  const html = thread.html;
-
-  // Parse HTML table rows
+  const html = thread.html || '';
   const rows = [];
-  const rowRegex = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
-  let rowMatch;
-  let headers = [];
-  let isFirst = true;
+  const rowRe = /<tr[^>]*>([\s\S]*?)<\/tr>/gi;
+  let rm, headers = [], first = true;
 
-  while ((rowMatch = rowRegex.exec(html)) !== null) {
-    const cellRegex = /<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi;
-    let cellMatch;
-    const cells = [];
-
-    while ((cellMatch = cellRegex.exec(rowMatch[1])) !== null) {
-      // Strip HTML tags from cell content
-      const text = cellMatch[1].replace(/<[^>]*>/g, '').trim();
-      cells.push(text);
+  while ((rm = rowRe.exec(html)) !== null) {
+    const cellRe = /<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi;
+    let cm, cells = [];
+    while ((cm = cellRe.exec(rm[1])) !== null) {
+      cells.push(cm[1].replace(/<[^>]*>/g, '').trim());
     }
-
-    if (cells.length === 0) continue;
-
-    if (isFirst) {
-      headers = cells.map(c => c.trim());
-      isFirst = false;
-    } else {
+    if (!cells.length) continue;
+    if (first) { headers = cells; first = false; }
+    else {
       const obj = {};
-      headers.forEach((h, i) => {
-        obj[h] = cells[i] || '';
-      });
+      headers.forEach((h, i) => { obj[h] = cells[i] || ''; });
       rows.push(obj);
     }
   }
-
-  return { rows, headers, threadId, sectionIds: extractSectionIds(html) };
+  return { rows, headers };
 }
 
-/**
- * Extract section IDs from QUIP HTML for row operations
- */
-function extractSectionIds(html) {
-  const ids = [];
-  const regex = /id=['"]([^'"]+)['"]/g;
-  let match;
-  while ((match = regex.exec(html)) !== null) {
-    ids.push(match[1]);
-  }
-  return ids;
-}
-
-/**
- * Add a row to a QUIP spreadsheet
- */
-function addRowToSpreadsheet(threadId, cells) {
-  const cellsHtml = cells.map(c => '<td>' + escapeHtml(String(c)) + '</td>').join('');
-  const rowHtml = '<tr>' + cellsHtml + '</tr>';
-
+function addRow(threadId, cells) {
+  const html = '<tr>' + cells.map(c => '<td>' + esc(String(c || '')) + '</td>').join('') + '</tr>';
   return quipPost('/threads/edit-document', {
-    thread_id: threadId,
-    format: 'html',
-    content: rowHtml,
-    location: 2  // Append after last content
+    thread_id: threadId, format: 'html', content: html, location: 2
   });
 }
 
-function escapeHtml(text) {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
+function esc(t) { return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
-// ─── Action Handlers ───
+// ─── REGISTER ───
+// First time: store login+fingerprint. Returning user: verify fingerprint.
 
-/**
- * LOGIN — Verify associate exists and device fingerprint
- */
-function handleLogin(data) {
-  const { login, badgeId, fingerprint } = data;
-  if (!login) return { error: 'Login is required.' };
+function handleRegister(data) {
+  const { login, fullName, shift, fingerprint } = data;
+  if (!login || !fullName || !shift) return { error: 'All fields are required.' };
+  if (!['night','early','late'].includes(shift)) return { error: 'Invalid shift.' };
 
-  const sheet = parseQuipSpreadsheet(QUIP_CONFIG.ASSOCIATES_THREAD);
-  const associate = sheet.rows.find(r =>
-    r.Login && r.Login.toLowerCase() === login.toLowerCase()
-  );
+  const preds = parseSheet(QUIP_CONFIG.PREDICTIONS_THREAD);
 
-  if (!associate) {
-    return { error: 'Login not found. Make sure you are registered for the Station Challenge.' };
-  }
+  // Check if this login already exists
+  const existing = preds.rows.find(r => r.Login && r.Login.toLowerCase() === login.toLowerCase());
 
-  // Badge verification (optional)
-  if (badgeId && associate.BadgeID && associate.BadgeID !== badgeId) {
-    return { error: 'Badge ID does not match.' };
-  }
-
-  // Device fingerprint check — if associate already has a fingerprint, verify it matches
-  if (associate.Fingerprint && associate.Fingerprint !== '' && associate.Fingerprint !== fingerprint) {
-    return { error: 'This account is linked to a different device. Use your own device to participate.' };
-  }
-
-  // If no fingerprint stored yet, we'll store it on first prediction
-  return {
-    associate: {
-      login: associate.Login,
-      fullName: associate.FullName,
-      shift: associate.Shift,
-      badgeId: associate.BadgeID
+  if (existing) {
+    // Returning user — verify fingerprint
+    if (existing.Fingerprint && existing.Fingerprint !== fingerprint) {
+      return { error: 'This login is already registered on a different device. Use your original device or contact your manager.' };
     }
-  };
+    // Welcome back
+    return { login: existing.Login, fullName: existing.FullName, shift: existing.Shift };
+  }
+
+  // New user — check if this device fingerprint is already used by someone else
+  const deviceUsed = preds.rows.find(r => r.Fingerprint === fingerprint && r.Login.toLowerCase() !== login.toLowerCase());
+  if (deviceUsed) {
+    return { error: 'This device is already registered to ' + deviceUsed.Login + '. One device per person.' };
+  }
+
+  // All good — they'll be added to the sheet on their first prediction
+  return { login: login.toLowerCase(), fullName, shift };
 }
 
-/**
- * GET MATCHES — Return all matches with status
- */
-function handleGetMatches() {
-  const sheet = parseQuipSpreadsheet(QUIP_CONFIG.MATCHES_THREAD);
-  const matches = sheet.rows.map(r => ({
-    matchCode: r.MatchCode,
-    teamA: r.TeamA,
-    teamB: r.TeamB,
-    group: r.Group,
-    matchDate: r.MatchDate,
-    venue: r.Venue,
-    status: (r.Status || 'open').toLowerCase(),
-    resultA: r.ResultA,
-    resultB: r.ResultB
-  }));
+// ─── GET MATCHES ───
 
+function handleGetMatches() {
+  const sheet = parseSheet(QUIP_CONFIG.MATCHES_THREAD);
+  const matches = sheet.rows.map(r => ({
+    matchCode: r.MatchCode || '',
+    teamA: r.TeamA || '',
+    teamB: r.TeamB || '',
+    group: r.Group || '',
+    matchDate: r.MatchDate || '',
+    venue: r.Venue || '',
+    status: (r.Status || 'open').toLowerCase(),
+    resultA: r.ResultA || '',
+    resultB: r.ResultB || ''
+  }));
   return { matches };
 }
 
-/**
- * GET MY PREDICTIONS — Return all predictions for a login
- */
+// ─── GET MY PREDICTIONS ───
+
 function handleGetMyPredictions(login) {
   if (!login) return { error: 'Login required.' };
 
-  const predSheet = parseQuipSpreadsheet(QUIP_CONFIG.PREDICTIONS_THREAD);
-  const matchSheet = parseQuipSpreadsheet(QUIP_CONFIG.MATCHES_THREAD);
-
+  const preds = parseSheet(QUIP_CONFIG.PREDICTIONS_THREAD);
+  const matches = parseSheet(QUIP_CONFIG.MATCHES_THREAD);
   const matchMap = {};
-  matchSheet.rows.forEach(m => { matchMap[m.MatchCode] = m; });
+  matches.rows.forEach(m => { matchMap[m.MatchCode] = m; });
 
-  const predictions = predSheet.rows
+  const myPreds = preds.rows
     .filter(p => p.Login && p.Login.toLowerCase() === login.toLowerCase())
     .map(p => {
-      const match = matchMap[p.MatchCode] || {};
+      const m = matchMap[p.MatchCode] || {};
       return {
         matchCode: p.MatchCode,
-        teamA: match.TeamA || '',
-        teamB: match.TeamB || '',
-        group: match.Group || '',
-        matchDate: match.MatchDate || '',
-        scoreA: p.ScoreA,
-        scoreB: p.ScoreB,
+        teamA: m.TeamA || '', teamB: m.TeamB || '',
+        group: m.Group || '', matchDate: m.MatchDate || '',
+        scoreA: p.ScoreA, scoreB: p.ScoreB,
         predictedWinner: p.PredictedWinner,
-        resultA: match.ResultA,
-        resultB: match.ResultB,
+        resultA: m.ResultA || '', resultB: m.ResultB || '',
         points: p.Points
       };
     });
 
-  return { predictions };
+  return { predictions: myPreds };
 }
 
-/**
- * SUBMIT PREDICTION — Anti-fraud checks + write to QUIP
- */
-function handleSubmitPrediction(data) {
-  const { login, matchCode, scoreA, scoreB, fingerprint } = data;
+// ─── SUBMIT PREDICTION ───
 
+function handleSubmitPrediction(data) {
+  const { login, fullName, shift, matchCode, scoreA, scoreB, fingerprint } = data;
   if (!login || !matchCode || scoreA === undefined || scoreB === undefined) {
-    return { error: 'All fields are required.' };
+    return { error: 'All fields required.' };
   }
 
-  // Check match exists and is open
-  const matchSheet = parseQuipSpreadsheet(QUIP_CONFIG.MATCHES_THREAD);
-  const match = matchSheet.rows.find(m => m.MatchCode === matchCode);
+  // Verify match is open
+  const matches = parseSheet(QUIP_CONFIG.MATCHES_THREAD);
+  const match = matches.rows.find(m => m.MatchCode === matchCode);
   if (!match) return { error: 'Match not found.' };
-  if (match.Status && match.Status.toLowerCase() !== 'open') {
+  if ((match.Status || '').toLowerCase() !== 'open') {
     return { error: 'Predictions for this match are closed.' };
   }
 
-  // Check for duplicate prediction
-  const predSheet = parseQuipSpreadsheet(QUIP_CONFIG.PREDICTIONS_THREAD);
-  const existing = predSheet.rows.find(p =>
+  // Check duplicate
+  const preds = parseSheet(QUIP_CONFIG.PREDICTIONS_THREAD);
+  const dup = preds.rows.find(p =>
     p.Login && p.Login.toLowerCase() === login.toLowerCase() && p.MatchCode === matchCode
   );
-  if (existing) {
-    return { error: 'You already submitted a prediction for this match.' };
-  }
+  if (dup) return { error: 'You already predicted this match.' };
 
-  // Check fingerprint — is this device already used by someone else?
-  const assocSheet = parseQuipSpreadsheet(QUIP_CONFIG.ASSOCIATES_THREAD);
-  const otherUser = assocSheet.rows.find(a =>
-    a.Fingerprint === fingerprint && a.Login.toLowerCase() !== login.toLowerCase()
+  // Check device not used by another person
+  const deviceUsed = preds.rows.find(p =>
+    p.Fingerprint === fingerprint && p.Login.toLowerCase() !== login.toLowerCase()
   );
-  if (otherUser) {
-    return { error: 'This device is already linked to another associate. Use your own device.' };
+  if (deviceUsed) {
+    return { error: 'This device belongs to ' + deviceUsed.Login + '. Use your own device.' };
   }
 
-  // Determine predicted winner
-  const a = parseInt(scoreA);
-  const b = parseInt(scoreB);
-  let winner;
-  if (a > b) winner = match.TeamA;
-  else if (b > a) winner = match.TeamB;
-  else winner = 'draw';
+  // Determine winner
+  const a = parseInt(scoreA), b = parseInt(scoreB);
+  const winner = a > b ? match.TeamA : b > a ? match.TeamB : 'draw';
 
-  // Write prediction to QUIP
-  const timestamp = new Date().toISOString();
-  addRowToSpreadsheet(QUIP_CONFIG.PREDICTIONS_THREAD, [
-    login, matchCode, String(a), String(b), winner, fingerprint, timestamp, ''
+  // Write to QUIP — this row IS the associate record + prediction in one
+  addRow(QUIP_CONFIG.PREDICTIONS_THREAD, [
+    login.toLowerCase(), fullName || login, shift || '',
+    matchCode, String(a), String(b), winner,
+    fingerprint, new Date().toISOString(), ''
   ]);
 
-  // Update associate fingerprint if not set
-  // (We skip this for simplicity — fingerprint is checked on login)
-
-  return { success: true, matchCode, scoreA: a, scoreB: b, predictedWinner: winner };
+  return { success: true };
 }
 
-/**
- * GET LEADERBOARD — Calculate from predictions
- */
+// ─── LEADERBOARD ───
+// Built on the fly from predictions that have Points filled in
+
 function handleGetLeaderboard() {
-  const predSheet = parseQuipSpreadsheet(QUIP_CONFIG.PREDICTIONS_THREAD);
-  const assocSheet = parseQuipSpreadsheet(QUIP_CONFIG.ASSOCIATES_THREAD);
+  const preds = parseSheet(QUIP_CONFIG.PREDICTIONS_THREAD);
 
-  // Build associate lookup
-  const assocMap = {};
-  assocSheet.rows.forEach(a => {
-    if (a.Login) assocMap[a.Login.toLowerCase()] = a;
-  });
-
-  // Aggregate points per login
   const scores = {};
-  predSheet.rows.forEach(p => {
-    if (!p.Login || p.Points === undefined || p.Points === '') return;
+  preds.rows.forEach(p => {
+    if (!p.Login) return;
     const key = p.Login.toLowerCase();
     if (!scores[key]) {
-      scores[key] = { totalPoints: 0, exactScores: 0, correctWinners: 0, totalPredictions: 0 };
+      scores[key] = {
+        login: p.Login, fullName: p.FullName || p.Login, shift: (p.Shift || '').toLowerCase(),
+        totalPoints: 0, exactScores: 0, correctWinners: 0, totalPredictions: 0
+      };
     }
-    const pts = parseInt(p.Points) || 0;
-    scores[key].totalPoints += pts;
     scores[key].totalPredictions++;
-    if (pts === 5) scores[key].exactScores++;
-    if (pts === 2) scores[key].correctWinners++;
+    if (p.Points !== '' && p.Points !== undefined) {
+      const pts = parseInt(p.Points) || 0;
+      scores[key].totalPoints += pts;
+      if (pts === 5) scores[key].exactScores++;
+      if (pts === 2) scores[key].correctWinners++;
+    }
   });
 
-  // Build leaderboard
-  const leaderboard = Object.keys(scores).map(login => {
-    const assoc = assocMap[login] || {};
-    return {
-      login: assoc.Login || login,
-      fullName: assoc.FullName || login,
-      shift: (assoc.Shift || 'unknown').toLowerCase(),
-      totalPoints: scores[login].totalPoints,
-      exactScores: scores[login].exactScores,
-      correctWinners: scores[login].correctWinners,
-      totalPredictions: scores[login].totalPredictions
-    };
-  });
-
-  // Sort by points desc, then exact scores, then correct winners
+  const leaderboard = Object.values(scores);
   leaderboard.sort((a, b) =>
     b.totalPoints - a.totalPoints ||
     b.exactScores - a.exactScores ||
@@ -378,69 +272,37 @@ function handleGetLeaderboard() {
   return { leaderboard };
 }
 
-/**
- * ADMIN: Add associates in bulk
- */
-function handleAddAssociates(associates) {
-  if (!Array.isArray(associates)) return { error: 'Associates must be an array.' };
+// ─── ADMIN: Record Result ───
+// Call this manually or build a simple admin page
+// After updating the Matches sheet with ResultA/ResultB/Status=completed,
+// run this to score all predictions for that match.
 
-  let added = 0;
-  const existing = parseQuipSpreadsheet(QUIP_CONFIG.ASSOCIATES_THREAD);
-  const existingLogins = new Set(existing.rows.map(r => r.Login?.toLowerCase()));
-
-  associates.forEach(a => {
-    if (!a.login || !a.fullName || !a.shift) return;
-    if (existingLogins.has(a.login.toLowerCase())) return;
-
-    addRowToSpreadsheet(QUIP_CONFIG.ASSOCIATES_THREAD, [
-      a.login.toLowerCase(), a.fullName, a.shift, a.badgeId || '', ''
-    ]);
-    added++;
-  });
-
-  return { success: true, added, total: associates.length };
+function handleRecordResult(data) {
+  // This is a helper — in practice you'll update the Matches sheet in QUIP directly
+  // and then update Points in the Predictions sheet
+  return {
+    message: 'To score: 1) Update Matches sheet with ResultA, ResultB, Status=completed. ' +
+             '2) In Predictions sheet, fill Points column: 5=exact score, 2=correct winner, 0=wrong.'
+  };
 }
 
-/**
- * ADMIN: Record match result and score predictions
- */
-function handleRecordResult(data) {
-  const { matchCode, scoreA, scoreB } = data;
-  if (!matchCode) return { error: 'Match code required.' };
+// ─── Utility: Score all predictions for a match (run manually) ───
+function scoreMatch(matchCode, actualA, actualB) {
+  const preds = parseSheet(QUIP_CONFIG.PREDICTIONS_THREAD);
+  const actualWinner = actualA > actualB ? 'teamA' : actualB > actualA ? 'teamB' : 'draw';
 
-  const matchSheet = parseQuipSpreadsheet(QUIP_CONFIG.MATCHES_THREAD);
-  const match = matchSheet.rows.find(m => m.MatchCode === matchCode);
-  if (!match) return { error: 'Match not found.' };
-
-  const a = parseInt(scoreA);
-  const b = parseInt(scoreB);
-  let actualWinner;
-  if (a > b) actualWinner = match.TeamA;
-  else if (b > a) actualWinner = match.TeamB;
-  else actualWinner = 'draw';
-
-  // Score all predictions for this match
-  const predSheet = parseQuipSpreadsheet(QUIP_CONFIG.PREDICTIONS_THREAD);
   let scored = 0;
-
-  predSheet.rows.forEach(p => {
+  preds.rows.forEach(p => {
     if (p.MatchCode !== matchCode) return;
-    const predA = parseInt(p.ScoreA);
-    const predB = parseInt(p.ScoreB);
-
+    const predA = parseInt(p.ScoreA), predB = parseInt(p.ScoreB);
     let points = 0;
-    if (predA === a && predB === b) points = 5;       // Exact score
-    else if (p.PredictedWinner === actualWinner) points = 2;  // Correct winner
-
-    // Note: Updating individual cells in QUIP requires section_id
-    // For simplicity, we'll rebuild the predictions sheet or use a separate scoring approach
+    if (predA === actualA && predB === actualB) points = 5;
+    else if (p.PredictedWinner === actualWinner) points = 2;
+    // Note: To update Points in QUIP you'd need the cell's section_id
+    // For simplicity, update Points manually in the QUIP spreadsheet
     scored++;
+    Logger.log(p.Login + ': ' + points + ' points');
   });
 
-  return {
-    success: true,
-    matchCode,
-    result: { scoreA: a, scoreB: b, winner: actualWinner },
-    predictionsScored: scored
-  };
+  return scored;
 }

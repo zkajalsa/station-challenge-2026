@@ -17,7 +17,7 @@
       </div>
     </div>
 
-    <!-- Login Screen -->
+    <!-- Registration / Login Screen -->
     <div id="login-screen" class="screen">
       <div class="login-card">
         <div class="logo-section">
@@ -32,15 +32,24 @@
             <input type="text" id="login-input" placeholder="e.g. jsmith" autocomplete="username" required>
           </div>
           <div class="input-group">
-            <label for="badge-input">Badge ID <span class="optional">(optional extra verification)</span></label>
-            <input type="text" id="badge-input" placeholder="e.g. BADGE001" autocomplete="off">
+            <label for="name-input">Full Name</label>
+            <input type="text" id="name-input" placeholder="e.g. John Smith" required>
+          </div>
+          <div class="input-group">
+            <label for="shift-input">Shift</label>
+            <select id="shift-input" required>
+              <option value="">Select your shift</option>
+              <option value="night">Night Shift 🌙</option>
+              <option value="early">Early Shift 🌅</option>
+              <option value="late">Late Shift 🌇</option>
+            </select>
           </div>
           <button type="submit" class="btn btn-primary" id="login-btn">
-            <span>Sign In</span>
+            <span>Let's Go</span>
           </button>
           <p id="login-error" class="error-text" style="display:none;"></p>
         </form>
-        <p class="footer-note">One device per associate · Your predictions are private</p>
+        <p class="footer-note">One device per person · Your predictions are tracked to your device</p>
       </div>
     </div>
 
