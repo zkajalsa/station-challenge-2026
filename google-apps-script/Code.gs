@@ -35,7 +35,25 @@ function doPost(e) {
   }
 }
 
-function doGet() {
+function doGet(e) {
+  // Handle GET requests with payload parameter (fallback for CORS)
+  if (e && e.parameter && e.parameter.payload) {
+    try {
+      var data = JSON.parse(e.parameter.payload);
+      var result;
+      switch (data.action) {
+        case 'register': result = doRegister(data); break;
+        case 'getMatches': result = doGetMatches(); break;
+        case 'getMyPredictions': result = doGetMyPredictions(data.login); break;
+        case 'submitPrediction': result = doSubmitPrediction(data); break;
+        case 'getLeaderboard': result = doGetLeaderboard(); break;
+        default: result = { error: 'Unknown action' };
+      }
+      return ContentService.createTextOutput(JSON.stringify(result)).setMimeType(ContentService.MimeType.JSON);
+    } catch (err) {
+      return ContentService.createTextOutput(JSON.stringify({ error: err.message })).setMimeType(ContentService.MimeType.JSON);
+    }
+  }
   return ContentService.createTextOutput(JSON.stringify({ status: 'ok' })).setMimeType(ContentService.MimeType.JSON);
 }
 

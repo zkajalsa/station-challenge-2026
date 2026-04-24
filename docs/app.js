@@ -36,15 +36,49 @@ async function api(action, data = {}) {
     throw new Error('Backend not configured. Admin: deploy Google Apps Script and update config.js');
   }
   const payload = { action, fingerprint: state.fingerprint, ...data };
-  const res = await fetch(CONFIG.API_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain' },
-    body: JSON.stringify(payload),
-    redirect: 'follow'
-  });
-  const result = await res.json();
-  if (result.error) throw new Error(result.error);
-  return result;
+
+  // Google Apps Script requires special handling:
+  // - Use mode: 'no-cors' won't work (can't read response)
+  // - Instead, use a form POST via URL params for GET-like requests
+  // - Or use fetch with redirect: 'follow' and text/plain content type
+  try {
+    const res = await fetch(CONFIG.API_URL, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      redirect: 'follow'
+    });
+    const text = await res.text();
+    try {
+      const result = JSON.parse(text);
+      if (result.error) throw new Error(result.error);
+      return result;
+    } catch (parseErr) {
+      // If response is HTML (Google login page), the script isn't public
+      if (text.includes('accounts.google.com') || text.includes('ServiceLogin')) {
+        throw new Error('Google Apps Script requires re-deployment. Go to script.google.com → Deploy → Manage → Edit → Set "Who has access" to "Anyone" → Deploy.');
+      }
+      throw new Error('Unexpected response from server.');
+    }
+  } catch (networkErr) {
+    if (networkErr.message.includes('Apps Script')) throw networkErr;
+    // NetworkError usually means CORS blocked the redirect
+    // Try alternative: use GET with encoded payload
+    const encoded = encodeURIComponent(JSON.stringify(payload));
+    const url = CONFIG.API_URL + '?payload=' + encoded;
+    const res = await fetch(url, { redirect: 'follow' });
+    const text = await res.text();
+    try {
+      const result = JSON.parse(text);
+      if (result.error) throw new Error(result.error);
+      return result;
+    } catch {
+      if (text.includes('accounts.google.com')) {
+        throw new Error('Google Apps Script not public. Set "Who has access" to "Anyone" in deployment settings.');
+      }
+      throw new Error('Could not connect to backend. Check Apps Script deployment.');
+    }
+  }
 }
 
 // ─── Flags ───
